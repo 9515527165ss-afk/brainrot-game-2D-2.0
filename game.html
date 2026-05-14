@@ -1,0 +1,311 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Steal a Brainrot</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: #111; 
+            overflow: hidden;
+            font-family: Arial;
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        canvas { 
+            display: block;
+            background: #2d5a27;
+        }
+        #ui {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 16px;
+            pointer-events: none;
+            text-shadow: 1px 1px 2px black;
+            z-index: 5;
+        }
+        .top-btn {
+            position: fixed;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            border: 2px solid white;
+            border-radius: 10px;
+            padding: 10px 15px;
+            font-size: 16px;
+            cursor: pointer;
+            z-index: 5;
+        }
+        #mobileControls {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: grid;
+            grid-template-columns: 70px 70px 70px;
+            grid-template-rows: 70px 70px 70px;
+            gap: 5px;
+            z-index: 5;
+        }
+        .ctrl {
+            background: rgba(255,255,255,0.25);
+            border: 2px solid white;
+            border-radius: 15px;
+            color: white;
+            font-size: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: none;
+        }
+        .ctrl:active { background: rgba(255,255,255,0.6); }
+        .empty { background: transparent; border: none; pointer-events: none; }
+        
+        .window {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(20, 20, 40, 0.95);
+            padding: 20px;
+            border-radius: 15px;
+            color: white;
+            z-index: 20;
+            text-align: center;
+            min-width: 280px;
+        }
+        .window button {
+            display: block;
+            width: 100%;
+            margin: 8px 0;
+            padding: 12px;
+            background: #333;
+            color: white;
+            border: 1px solid #888;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .window .close-btn { background: #933; }
+        .window .gold-btn { background: #c90; }
+    </style>
+</head>
+<body>
+    <canvas id="game"></canvas>
+    
+    <div id="ui">
+        <div>💰 <span id="money">0</span></div>
+        <div>📦 <span id="stolen">0</span></div>
+        <div>🌟 <span id="rebirth">0</span> (x<span id="bonus">1.0</span>)</div>
+    </div>
+    
+    <button class="top-btn" style="top:10px;right:10px;" onclick="openShop()">🛒</button>
+    <button class="top-btn" style="top:65px;right:10px;" onclick="openRebirth()">🌟</button>
+
+    <div id="mobileControls">
+        <div class="empty"></div>
+        <div class="ctrl" id="btnUp">▲</div>
+        <div class="empty"></div>
+        <div class="ctrl" id="btnLeft">◄</div>
+        <div class="empty"></div>
+        <div class="ctrl" id="btnRight">►</div>
+        <div class="empty"></div>
+        <div class="ctrl" id="btnDown">▼</div>
+        <div class="empty"></div>
+    </div>
+
+    <!-- Магазин -->
+    <div class="window" id="shopWindow">
+        <h3>🛒 МАГАЗИН</h3>
+        <p id="shopMoney"></p>
+        <button onclick="buy('speed')" id="btnSpeed"></button>
+        <button onclick="buy('range')" id="btnRange"></button>
+        <button onclick="buy('luck')" id="btnLuck"></button>
+        <button class="close-btn" onclick="closeShop()">Закрыть</button>
+    </div>
+
+    <!-- Перерождение -->
+    <div class="window" id="rebirthWindow">
+        <h3>🌟 ПЕРЕРОЖДЕНИЕ</h3>
+        <p id="rebirthInfo"></p>
+        <button class="gold-btn" onclick="doRebirth()">Переродиться</button>
+        <button class="close-btn" onclick="closeRebirth()">Закрыть</button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        const socket = io();
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+        
+        // КАРТА
+        let MAP_W = 2000;
+        let MAP_H = 2000;
+        let VIEW_W, VIEW_H;
+        
+        function resize() {
+            VIEW_W = window.innerWidth;
+            VIEW_H = window.innerHeight;
+            canvas.width = VIEW_W;
+            canvas.height = VIEW_H;
+        }
+        resize();
+        window.addEventListener('resize', resize);
+        
+        let player = { x: MAP_W/2, y: MAP_H/2 };
+        let money = 0, stolen = 0, rebirthLevel = 0, rebirthBonus = 1.0;
+        let upgrades = { speed: 0, range: 0, luck: 0 };
+        let brainrots = [];
+        
+        // ИСПРАВЛЕНИЕ ЗАЕДАНИЯ — независимые клавиши
+        let keys = { w: false, a: false, s: false, d: false };
+
+        // Подключение
+        socket.on('init', (data) => {
+            player.x = data.x;
+            player.y = data.y;
+            money = data.money;
+            stolen = data.stolen;
+            rebirthLevel = data.rebirth_level;
+            rebirthBonus = data.rebirth_bonus;
+            upgrades = data.upgrades;
+            brainrots = data.brainrots;
+            MAP_W = data.mapW;
+            MAP_H = data.mapH;
+            updateUI();
+        });
+
+        socket.on('update', (data) => {
+            if (data.money !== undefined) money = data.money;
+            if (data.stolen !== undefined) stolen = data.stolen;
+            if (data.rebirth_level !== undefined) rebirthLevel = data.rebirth_level;
+            if (data.rebirth_bonus !== undefined) rebirthBonus = data.rebirth_bonus;
+            if (data.upgrades) upgrades = data.upgrades;
+            if (data.brainrots) brainrots = data.brainrots;
+            updateUI();
+        });
+
+        // КЛАВИАТУРА — без заедания
+        document.addEventListener('keydown', e => {
+            keys[e.key.toLowerCase()] = true;
+            if (e.key.toLowerCase() === 'e') { e.preventDefault(); openShop(); }
+            if (e.key.toLowerCase() === 'r') { e.preventDefault(); openRebirth(); }
+        });
+        document.addEventListener('keyup', e => {
+            keys[e.key.toLowerCase()] = false;
+        });
+
+        // ТЕЛЕФОН — кнопки не заедают (pointerdown/up)
+        function setupBtn(id, key) {
+            const btn = document.getElementById(id);
+            btn.addEventListener('pointerdown', e => {
+                e.preventDefault();
+                keys[key] = true;
+            });
+            btn.addEventListener('pointerup', e => {
+                e.preventDefault();
+                keys[key] = false;
+            });
+            btn.addEventListener('pointerleave', e => {
+                keys[key] = false;
+            });
+            btn.addEventListener('pointercancel', e => {
+                keys[key] = false;
+            });
+        }
+        setupBtn('btnUp', 'w');
+        setupBtn('btnDown', 's');
+        setupBtn('btnLeft', 'a');
+        setupBtn('btnRight', 'd');
+
+        // ДВИЖЕНИЕ — отдельный цикл
+        function updateMovement() {
+            let spd = 4 + upgrades.speed * 1.5;
+            if (keys['w'] || keys['arrowup']) player.y -= spd;
+            if (keys['s'] || keys['arrowdown']) player.y += spd;
+            if (keys['a'] || keys['arrowleft']) player.x -= spd;
+            if (keys['d'] || keys['arrowright']) player.x += spd;
+            
+            player.x = Math.max(20, Math.min(MAP_W - 20, player.x));
+            player.y = Math.max(20, Math.min(MAP_H - 20, player.y));
+            
+            socket.emit('move', { x: player.x, y: player.y });
+        }
+        setInterval(updateMovement, 16); // ~60 FPS отдельно от рендера
+
+        // ОТРИСОВКА
+        function draw() {
+            ctx.fillStyle = '#2d5a27';
+            ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+            
+            // Камера за игроком
+            let camX = player.x - VIEW_W / 2;
+            let camY = player.y - VIEW_H / 2;
+            
+            // Brainrots
+            brainrots.forEach(b => {
+                let sx = b.x - camX;
+                let sy = b.y - camY;
+                if (sx > -50 && sx < VIEW_W + 50 && sy > -50 && sy < VIEW_H + 50) {
+                    ctx.fillStyle = b.color;
+                    ctx.fillRect(sx - b.size/2, sy - b.size/2, b.size, b.size);
+                    ctx.fillStyle = 'white';
+                    ctx.font = '12px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(b.name, sx, sy - b.size/2 - 5);
+                }
+            });
+            
+            // Игрок всегда в центре
+            ctx.fillStyle = '#4488ff';
+            ctx.beginPath();
+            ctx.arc(VIEW_W/2, VIEW_H/2, 15, 0, Math.PI*2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            requestAnimationFrame(draw);
+        }
+        draw();
+
+        function updateUI() {
+            document.getElementById('money').textContent = money;
+            document.getElementById('stolen').textContent = stolen;
+            document.getElementById('rebirth').textContent = rebirthLevel;
+            document.getElementById('bonus').textContent = rebirthBonus.toFixed(1);
+        }
+
+        function openShop() {
+            document.getElementById('shopWindow').style.display = 'block';
+            document.getElementById('shopMoney').textContent = '💰 ' + money + ' монет';
+            let s = upgrades.speed < 5 ? `⚡ Скорость (${upgrades.speed}/5) - 100` : '⚡ Скорость MAX';
+            let r = upgrades.range < 3 ? `🎯 Дальность (${upgrades.range}/3) - 150` : '🎯 Дальность MAX';
+            let l = upgrades.luck < 5 ? `🍀 Удача (${upgrades.luck}/5) - 200` : '🍀 Удача MAX';
+            document.getElementById('btnSpeed').textContent = s;
+            document.getElementById('btnRange').textContent = r;
+            document.getElementById('btnLuck').textContent = l;
+        }
+
+        function closeShop() { document.getElementById('shopWindow').style.display = 'none'; }
+        function buy(key) { socket.emit('buy_upgrade', { key: key }); }
+
+        function openRebirth() {
+            let cost = 500 * (rebirthLevel + 1);
+            document.getElementById('rebirthWindow').style.display = 'block';
+            document.getElementById('rebirthInfo').innerHTML = 
+                `Уровень: ${rebirthLevel} → ${rebirthLevel + 1}<br>` +
+                `Бонус: x${rebirthBonus.toFixed(1)} → x${(rebirthBonus + 0.5).toFixed(1)}<br>` +
+                `Стоимость: ${cost} монет`;
+        }
+
+        function closeRebirth() { document.getElementById('rebirthWindow').style.display = 'none'; }
+        function doRebirth() { socket.emit('rebirth'); closeRebirth(); }
+    </script>
+</body>
+</html>
